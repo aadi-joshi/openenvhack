@@ -43,6 +43,9 @@ Thumbs.db
 context/
 .claude/
 
+# Dev / QA testing artifacts
+dev/
+
 # uv
 uv.lock
 PROMPT.md
