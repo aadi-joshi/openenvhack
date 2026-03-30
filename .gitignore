@@ -46,6 +46,5 @@ context/
 # Dev / QA testing artifacts
 dev/
 
-# uv
-uv.lock
+# Internal docs
 PROMPT.md
