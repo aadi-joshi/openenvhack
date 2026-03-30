@@ -1,0 +1,35 @@
+[project]
+name = "openenv-db-er"
+version = "0.1.0"
+description = "DB-ER: Database Emergency Response: An OpenEnv benchmark for causal debugging and AI safety"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+keywords = ["openenv", "rl", "benchmark", "database", "sre", "debugging"]
+authors = [{ name = "Team maxout" }]
+
+dependencies = [
+    "openenv-core>=0.2.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "pydantic>=2.0.0",
+    "sqlparse>=0.5.0",
+    "openai>=1.50.0",
+]
+
+[project.scripts]
+server = "server.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["db_er", "server"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.27.0",
+]
