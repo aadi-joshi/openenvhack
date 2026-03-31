@@ -4,7 +4,7 @@
 #   docker build -t db-er .
 #
 # Run (server mode):
-#   docker run -p 8000:8000 db-er
+#   docker run -p 7860:7860 db-er
 #
 # Run (inference mode):
 #   docker run --rm \

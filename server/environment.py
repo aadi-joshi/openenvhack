@@ -106,9 +106,9 @@ class DBEREnvironment(Environment[DBERAction, DBERObservation, DBERState]):
 
         Args:
             seed:       Controls task selection when *task_id* is not given.
-                        seed % 3 -> 0=task 1, 1=task 2, 2=task 3.
+                        seed % 5 -> 0=task 1, 1=task 2, 2=task 3, 3=task 4, 4=task 5.
             episode_id: Opaque identifier stored in state.
-            task_id:    Override task selection (1, 2 or 3).
+            task_id:    Override task selection (1-5).
         """
         #  1. Pick task 
         if task_id is not None:

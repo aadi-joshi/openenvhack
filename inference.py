@@ -87,7 +87,7 @@ You must respond with a SINGLE JSON object -- no other text, no markdown fences.
 - Task 1 (Phantom Duplicates): Look for duplicate emails in users. Keep the OLDEST record per email (lowest id).
 - Task 2 (Cascading Failure): admin_audit_logs contains record_json with deleted product data. Parse it and re-INSERT.
 - Task 3 (Payroll Black Hole): The "timeout" is MISLEADING. Check employees_old for duplicate IDs (no PRIMARY KEY). Delete corrupted duplicates (salary=0, active=0), then migrate remaining employees.
-- Task 4 (Schema Drift): Columns were renamed. Use schema_changelog to find original names. Recreate tables with original column names using CREATE-INSERT-DROP-RENAME pattern.
+- Task 4 (Schema Drift): Columns were renamed. Use schema_changelog (old_column to new_column mapping). Reverse each rename with: ALTER TABLE <table> RENAME COLUMN <current_name> TO <original_name>. Do NOT use DROP TABLE - inventory and categories are protected core tables and will trigger instant -1.0 failure.
 - Task 5 (Referential Maze): Multi-table FK crisis. Check decommission_log before restoring anything. Use sync_audit for missing data. Projects 5 and 9 are decommissioned and must NOT be restored.
 
 Always respond with valid JSON. Never include explanations outside the JSON."""
