@@ -243,6 +243,70 @@ class TestPerfectAgent:
         score = obs.last_query_result[0]["grader_score"]
         assert score == pytest.approx(1.0)
 
+    def test_task4_perfect_score(self):
+        """Reverse schema column renames using ALTER TABLE RENAME COLUMN."""
+        env = DBEREnvironment()
+        env.reset(task_id=4)
+
+        # Rename categories columns back to original names
+        env.step(sql("ALTER TABLE categories RENAME COLUMN category_label TO name"))
+        env.step(sql("ALTER TABLE categories RENAME COLUMN detail_text TO description"))
+        env.step(sql("ALTER TABLE categories RENAME COLUMN parent_ref TO parent_id"))
+        env.step(sql("ALTER TABLE categories RENAME COLUMN is_enabled TO active"))
+
+        # Rename inventory columns back to original names
+        env.step(sql("ALTER TABLE inventory RENAME COLUMN item_label TO product_name"))
+        env.step(sql("ALTER TABLE inventory RENAME COLUMN cat_ref TO category_id"))
+        env.step(sql("ALTER TABLE inventory RENAME COLUMN qty_on_hand TO quantity"))
+        env.step(sql("ALTER TABLE inventory RENAME COLUMN price_per_unit TO unit_price"))
+        env.step(sql("ALTER TABLE inventory RENAME COLUMN storage_loc TO warehouse"))
+        env.step(sql("ALTER TABLE inventory RENAME COLUMN modified_at TO last_updated"))
+
+        obs = env.step(submit("Reversed all column renames in inventory and categories tables."))
+        assert obs.done is True
+        score = obs.last_query_result[0]["grader_score"]
+        assert score == pytest.approx(1.0)
+
+    def test_task5_perfect_score(self):
+        """Restore missing non-decommissioned projects, assignments, and budgets."""
+        env = DBEREnvironment()
+        env.reset(task_id=5)
+
+        # Step 1: Insert missing project 3 (API Gateway)
+        env.step(sql(
+            "INSERT INTO projects VALUES (3, 1, 'API Gateway', 'active', '2024-08-01')"
+        ))
+        # Step 2: Insert missing project 7 (Customer Portal)
+        env.step(sql(
+            "INSERT INTO projects VALUES (7, 2, 'Customer Portal', 'active', '2024-11-01')"
+        ))
+        # Step 3: Insert assignments for project 3
+        env.step(sql(
+            "INSERT INTO assignments VALUES (4, 3, 'Hank Miller', 'lead', 40)"
+        ))
+        env.step(sql(
+            "INSERT INTO assignments VALUES (5, 3, 'Ivy Taylor', 'contributor', 25)"
+        ))
+        # Step 4: Insert assignments for project 7
+        env.step(sql(
+            "INSERT INTO assignments VALUES (8, 7, 'Jack Anderson', 'lead', 40)"
+        ))
+        env.step(sql(
+            "INSERT INTO assignments VALUES (9, 7, 'Karen Thomas', 'contributor', 20)"
+        ))
+        # Step 5: Insert budgets for restored projects
+        env.step(sql(
+            "INSERT INTO budgets VALUES (3, 3, '2025-Q1', 120000.0, 1)"
+        ))
+        env.step(sql(
+            "INSERT INTO budgets VALUES (6, 7, '2025-Q1', 60000.0, 0)"
+        ))
+
+        obs = env.step(submit("Restored projects 3 and 7 with assignments and budgets. Skipped decommissioned projects 5 and 9."))
+        assert obs.done is True
+        score = obs.last_query_result[0]["grader_score"]
+        assert score == pytest.approx(1.0)
+
     def test_all_tasks_reproducible(self):
         """Run task 1 twice with same actions -- must produce identical scores."""
         def run_task1():
@@ -283,3 +347,10 @@ class TestEpisodeIsolation:
 
         obs3 = env.reset(task_id=3)
         assert "employees_old" in obs3.db_summary["tables"]
+
+        obs4 = env.reset(task_id=4)
+        assert "inventory" in obs4.db_summary["tables"]
+
+        obs5 = env.reset(task_id=5)
+        assert "projects" in obs5.db_summary["tables"]
+

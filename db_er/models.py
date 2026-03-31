@@ -49,7 +49,7 @@ class DBERObservation(Observation):
         ..., description="The initial incident alert / pager message"
     )
     task_id: int = Field(
-        1, description="Active task ID: 1=Easy (Phantom Duplicates), 2=Medium (Cascading Failure), 3=Hard (Payroll Black Hole)"
+        1, description="Active task ID: 1=Easy, 2=Medium, 3=Medium-Hard, 4=Hard, 5=Very Hard"
     )
 
     #  Last action result 

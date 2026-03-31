@@ -20,7 +20,7 @@ import re
 import sqlite3
 from typing import Any, Dict, List, Optional
 
-from openenv.core.env_server.interfaces import Environment
+from openenv.core.env_server.interfaces import Environment, EnvironmentMetadata
 
 from db_er.models import DBERAction, DBERObservation, DBERState
 from server.fixtures import (
@@ -67,13 +67,31 @@ _S = _EpisodeState()  # singleton - shared by all DBEREnvironment instances
 class DBEREnvironment(Environment[DBERAction, DBERObservation, DBERState]):
     """Database Emergency Response OpenEnv environment.
 
-    Supports 3 tasks of increasing difficulty:
-      1 -- Phantom Duplicates (Easy)
+    Supports 5 tasks of increasing difficulty:
+      1 -- Phantom Duplicates  (Easy)
       2 -- Cascading Failure   (Medium)
-      3 -- Payroll Black Hole  (Hard)
+      3 -- Payroll Black Hole  (Medium-Hard)
+      4 -- Schema Drift        (Hard)
+      5 -- Referential Maze    (Very Hard)
     """
 
     SUPPORTS_CONCURRENT_SESSIONS = False
+
+    def get_metadata(self) -> EnvironmentMetadata:
+        return EnvironmentMetadata(
+            name="DB-ER: Database Emergency Response",
+            description=(
+                "An OpenEnv benchmark where an AI agent is paged into a production "
+                "database incident and must diagnose and repair corruption using raw "
+                "SQL queries under a strict action budget. Features 5 tasks spanning "
+                "duplicate cleanup, FK restoration, payroll migration, schema repair, "
+                "and multi-table referential integrity recovery. Graded deterministically "
+                "via F1 score on exact row sets against a hidden golden database."
+            ),
+            version="1.0.0",
+            author="Team maxout (Aadi Joshi, Kavya Bhand)",
+            documentation_url="https://huggingface.co/spaces/aadi-joshi/openenvhack",
+        )
 
     #  OpenEnv API 
 
@@ -94,11 +112,11 @@ class DBEREnvironment(Environment[DBERAction, DBERObservation, DBERState]):
         """
         #  1. Pick task 
         if task_id is not None:
-            if task_id not in (1, 2, 3):
-                raise ValueError(f"task_id must be 1, 2, or 3 -- got {task_id!r}")
+            if task_id not in (1, 2, 3, 4, 5):
+                raise ValueError(f"task_id must be 1, 2, 3, 4, or 5 -- got {task_id!r}")
             _S.task_id = task_id
         elif seed is not None:
-            _S.task_id = (seed % 3) + 1
+            _S.task_id = (seed % 5) + 1
         else:
             _S.task_id = 1
 

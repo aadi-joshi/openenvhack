@@ -40,7 +40,7 @@ MAX_STEPS: int = int(os.environ.get("MAX_STEPS", "40"))
 TEMPERATURE: float = float(os.environ.get("TEMPERATURE", "0.05"))
 TASK_IDS: List[int] = [
     int(t.strip())
-    for t in os.environ.get("TASK_IDS", "1,2,3").split(",")
+    for t in os.environ.get("TASK_IDS", "1,2,3,4,5").split(",")
     if t.strip()
 ]
 
@@ -87,6 +87,8 @@ You must respond with a SINGLE JSON object -- no other text, no markdown fences.
 - Task 1 (Phantom Duplicates): Look for duplicate emails in users. Keep the OLDEST record per email (lowest id).
 - Task 2 (Cascading Failure): admin_audit_logs contains record_json with deleted product data. Parse it and re-INSERT.
 - Task 3 (Payroll Black Hole): The "timeout" is MISLEADING. Check employees_old for duplicate IDs (no PRIMARY KEY). Delete corrupted duplicates (salary=0, active=0), then migrate remaining employees.
+- Task 4 (Schema Drift): Columns were renamed. Use schema_changelog to find original names. Recreate tables with original column names using CREATE-INSERT-DROP-RENAME pattern.
+- Task 5 (Referential Maze): Multi-table FK crisis. Check decommission_log before restoring anything. Use sync_audit for missing data. Projects 5 and 9 are decommissioned and must NOT be restored.
 
 Always respond with valid JSON. Never include explanations outside the JSON."""
 
@@ -193,6 +195,8 @@ FALLBACK_ACTIONS: Dict[int, str] = {
     1: '{"action_type": "execute_sql", "query": "SELECT id, email, username FROM users ORDER BY email, id"}',
     2: '{"action_type": "execute_sql", "query": "SELECT * FROM admin_audit_logs ORDER BY id"}',
     3: '{"action_type": "execute_sql", "query": "SELECT id, name, base_salary, hire_date, active FROM employees_old ORDER BY id, hire_date"}',
+    4: '{"action_type": "execute_sql", "query": "SELECT * FROM schema_changelog ORDER BY id"}',
+    5: '{"action_type": "execute_sql", "query": "SELECT * FROM sync_audit ORDER BY id"}',
 }
 
 
@@ -341,7 +345,9 @@ def main() -> None:
     task_names = {
         1: "Easy -- Phantom Duplicates",
         2: "Medium -- Cascading Failure",
-        3: "Hard -- Payroll Black Hole",
+        3: "Medium-Hard -- Payroll Black Hole",
+        4: "Hard -- Schema Drift",
+        5: "Very Hard -- Referential Maze",
     }
 
     results: Dict[int, float] = {}

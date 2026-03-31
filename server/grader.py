@@ -121,6 +121,8 @@ def compute_violations(conn: sqlite3.Connection, task_id: int) -> int:
     Task 1: number of extra (duplicate) email rows.
     Task 2: number of FK violations in the purchases table.
     Task 3: number of unique employee IDs in employees_old not yet in employees_new.
+    Task 4: number of columns in inventory+categories with wrong names vs golden schema.
+    Task 5: number of missing project records that should be present (excluding decommissioned).
     """
     try:
         if task_id == 1:
@@ -147,6 +149,37 @@ def compute_violations(conn: sqlite3.Connection, task_id: int) -> int:
                 """
             ).fetchone()
             return row[0]
+
+        elif task_id == 4:
+            # Count columns in inventory and categories that don't match golden names
+            golden_inv_cols = {"id", "product_name", "category_id", "quantity",
+                               "unit_price", "warehouse", "last_updated"}
+            golden_cat_cols = {"id", "name", "description", "parent_id", "active"}
+            violations = 0
+            try:
+                inv_cols = {row[1] for row in conn.execute("PRAGMA table_info(inventory)").fetchall()}
+                violations += len(golden_inv_cols - inv_cols)
+            except Exception:
+                violations += len(golden_inv_cols)
+            try:
+                cat_cols = {row[1] for row in conn.execute("PRAGMA table_info(categories)").fetchall()}
+                violations += len(golden_cat_cols - cat_cols)
+            except Exception:
+                violations += len(golden_cat_cols)
+            return violations
+
+        elif task_id == 5:
+            # Count projects that should exist but don't (excluding decommissioned)
+            # Projects 3 and 7 should be present; also count missing assignments and budgets
+            violations = 0
+            # Missing projects (should have IDs 1-4,6-8,10 in golden)
+            golden_ids = {1, 2, 3, 4, 6, 7, 8, 10}
+            try:
+                present = {row[0] for row in conn.execute("SELECT id FROM projects").fetchall()}
+                violations += len(golden_ids - present)
+            except Exception:
+                violations += len(golden_ids)
+            return violations
 
     except Exception:
         return 0

@@ -1,6 +1,6 @@
 ---
 title: DB-ER Database Emergency Response
-emoji: 🚨
+emoji: "\U0001F6A8"
 colorFrom: red
 colorTo: indigo
 sdk: docker
@@ -30,7 +30,7 @@ DB-ER puts an agent in the role of an on-call database engineer responding to a 
 
 The catch: the incident logs are sometimes misleading, the database schema has no documentation, and every destructive action is permanent within the episode.
 
-## The Three Tasks
+## The Five Tasks
 
 **Task 1 - Phantom Duplicates (Easy)**
 A bulk import script ran twice. The `users` table has duplicate email rows that are causing constraint failures across the app. Find them and remove the duplicates while keeping the original records.
@@ -38,8 +38,14 @@ A bulk import script ran twice. The `users` table has duplicate email rows that 
 **Task 2 - Cascading Failure (Medium)**
 Someone ran a cleanup script that deleted three products still referenced by active purchases. Every checkout is now broken. The `admin_audit_logs` table has the deleted records stored as JSON. Restore them.
 
-**Task 3 - Payroll Black Hole (Hard)**
+**Task 3 - Payroll Black Hole (Medium-Hard)**
 A migration script died partway through. The incident log blames a timeout, but that is a red herring. The real problem is corrupted duplicate employee IDs in the source table that caused the crash. Clean the corruption, then finish the migration and preserve every salary mapping correctly.
+
+**Task 4 - Schema Drift (Hard)**
+A junior DBA ran a schema standardization script that renamed columns in the `inventory` and `categories` tables. The application code expects the original column names and is now broken. The `schema_changelog` table has a record of every rename. Reverse the column renames while preserving all data. Requires the SQLite CREATE-INSERT-DROP-RENAME pattern since ALTER TABLE column rename support is limited.
+
+**Task 5 - Referential Maze (Very Hard)**
+A cross-database sync job crashed partway through, leaving orphaned FK references and missing records across four interrelated tables (`departments`, `projects`, `assignments`, `budgets`). The incident ticket blames a network timeout, but the real problem is scattered across all four tables. Not all missing records should be restored: some projects were deliberately decommissioned last quarter. The agent must check `decommission_log` before re-inserting anything and use `sync_audit` to find the data for legitimately missing records. Restoring a decommissioned project is penalized.
 
 ---
 
@@ -64,7 +70,7 @@ Each episode ends when the agent calls `submit_resolution` or runs out of budget
 
 ```bash
 pip install -r requirements.txt
-uvicorn server.app:app --host 0.0.0.0 --port 8000
+uvicorn server.app:app --host 0.0.0.0 --port 7860
 ```
 
 Run the tests:
@@ -91,7 +97,7 @@ Follows the standard OpenEnv spec:
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Liveness check |
-| `/reset` | POST | Start a new episode. Pass `task_id` (1/2/3) or `seed` |
+| `/reset` | POST | Start a new episode. Pass `task_id` (1-5) or `seed` |
 | `/step` | POST | Execute one action |
 | `/state` | GET | Current episode state |
 | `/schema` | GET | Action and observation schemas |
@@ -121,7 +127,7 @@ curl -X POST https://aadi-joshi-openenvhack.hf.space/step \
 ```
 db_er/          Pydantic models (action, observation, state) and HTTP client
 server/         Environment logic, fixtures, grader, and safety guards
-tests/          92 unit and integration tests
+tests/          Unit and integration tests
 inference.py    Baseline agent using the OpenAI client
 openenv.yaml    OpenEnv manifest
 Dockerfile      Container config for HF Spaces (port 7860)
@@ -137,7 +143,7 @@ Dockerfile      Container config for HF Spaces (port 7860)
 | `MODEL_NAME` | Model identifier (required for inference) |
 | `HF_TOKEN` | API key (required for inference) |
 | `ENV_BASE_URL` | Point at a remote server instead of running in-process |
-| `TASK_IDS` | Which tasks to run, e.g. `1,2,3` |
+| `TASK_IDS` | Which tasks to run, e.g. `1,2,3,4,5` |
 
 ---
 

@@ -44,19 +44,46 @@ TASK_TICKETS: Dict[int, str] = {
         "WARNING: This timeout message may be MISLEADING. Investigate employees_old carefully "
         "before concluding. Complete the migration while preserving the exact ID-to-salary mapping."
     ),
+    4: (
+        "CRITICAL ALERT [P1] -- 2025-01-15 08:22:03 UTC\n"
+        "Application error: column 'product_name' not found in table 'inventory'\n"
+        "Impact: Warehouse management dashboard returning blank pages. "
+        "All inventory queries failing with schema mismatch errors.\n"
+        "Context: Junior DBA ran a schema update script last night to 'standardize column names'. "
+        "The script renamed several columns in the inventory table and changed the "
+        "categories table structure. The application code expects the original column names. "
+        "A backup of the original schema is in the schema_changelog table. "
+        "Restore the original schema while preserving all data."
+    ),
+    5: (
+        "CRITICAL ALERT [P0] -- 2025-02-10 03:45:12 UTC\n"
+        "Batch job FAILED: integrity constraint violation across project tables.\n"
+        "Impact: Quarterly budget reconciliation cannot run. Finance team blocked.\n"
+        "Context: A cross-database sync job attempted to merge records from a staging "
+        "environment into production. The job crashed partway through, reporting a "
+        "network timeout at the 'budgets' table insert. Some records may be missing "
+        "or duplicated. WARNING: Not all missing records need to be restored -- some "
+        "projects were deliberately decommissioned last quarter and their absence is "
+        "intentional. Check the decommission_log table before re-inserting anything. "
+        "The sync_audit table has partial snapshots of what the job was trying to write."
+    ),
 }
 
 CORE_TABLES: Dict[int, List[str]] = {
     1: ["users"],
     2: ["vendors", "products", "purchases"],
     3: ["employees_old", "employees_new", "compensation"],
+    4: ["inventory", "categories"],
+    5: ["departments", "projects", "assignments", "budgets"],
 }
+
 
 
 def create_corrupted_db(task_id: int) -> sqlite3.Connection:
     """Return a fresh in-memory SQLite connection with the corrupted schema/data."""
     conn = _make_conn()
-    {1: _task1_corrupted, 2: _task2_corrupted, 3: _task3_corrupted}[task_id](conn)
+    {1: _task1_corrupted, 2: _task2_corrupted, 3: _task3_corrupted,
+     4: _task4_corrupted, 5: _task5_corrupted}[task_id](conn)
     conn.commit()
     return conn
 
@@ -64,7 +91,8 @@ def create_corrupted_db(task_id: int) -> sqlite3.Connection:
 def create_golden_db(task_id: int) -> sqlite3.Connection:
     """Return a read-only in-memory SQLite connection with the golden (correct) state."""
     conn = _make_conn()
-    {1: _task1_golden, 2: _task2_golden, 3: _task3_golden}[task_id](conn)
+    {1: _task1_golden, 2: _task2_golden, 3: _task3_golden,
+     4: _task4_golden, 5: _task5_golden}[task_id](conn)
     conn.commit()
     return conn
 
@@ -480,4 +508,382 @@ GOLDEN_ROW_COUNTS: Dict[int, Dict[str, int]] = {
         "employees_new": len(_EMP_CANONICAL),        # 15
         "compensation":  len(_EMP_CANONICAL),        # 15
     },
+    4: {
+        "inventory":  10,
+        "categories": 5,
+    },
+    5: {
+        "departments": 6,
+        "projects":    8,
+        "assignments": 11,
+        "budgets":     8,
+    },
 }
+
+
+# ── TASK 4 : Schema Drift ──────────────────────────────────────────────
+#
+# Scenario: A junior DBA ran a "standardization" script that renamed columns
+# in the inventory table and restructured the categories table. The application
+# code expects the original column names. The schema_changelog table contains
+# a record of what was changed.
+#
+# Agent goal:
+#   1. Read schema_changelog to understand the original column names
+#   2. Recreate the inventory table with original column names, preserving data
+#   3. Recreate the categories table with original column names, preserving data
+#
+# This tests schema-level reasoning, not just data manipulation.
+
+_CATEGORIES_GOLDEN_DDL = """
+CREATE TABLE categories (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT    NOT NULL,
+    description TEXT    NOT NULL DEFAULT '',
+    parent_id   INTEGER,
+    active      INTEGER NOT NULL DEFAULT 1
+);
+"""
+
+_CATEGORIES_CORRUPTED_DDL = """
+CREATE TABLE categories (
+    id              INTEGER PRIMARY KEY,
+    category_label  TEXT    NOT NULL,
+    detail_text     TEXT    NOT NULL DEFAULT '',
+    parent_ref      INTEGER,
+    is_enabled      INTEGER NOT NULL DEFAULT 1
+);
+"""
+
+_INVENTORY_GOLDEN_DDL = """
+CREATE TABLE inventory (
+    id             INTEGER PRIMARY KEY,
+    product_name   TEXT    NOT NULL,
+    category_id    INTEGER NOT NULL,
+    quantity       INTEGER NOT NULL DEFAULT 0,
+    unit_price     REAL    NOT NULL,
+    warehouse      TEXT    NOT NULL DEFAULT 'main',
+    last_updated   TEXT    NOT NULL,
+    FOREIGN KEY (category_id) REFERENCES categories(id)
+);
+"""
+
+_INVENTORY_CORRUPTED_DDL = """
+CREATE TABLE inventory (
+    id             INTEGER PRIMARY KEY,
+    item_label     TEXT    NOT NULL,
+    cat_ref        INTEGER NOT NULL,
+    qty_on_hand    INTEGER NOT NULL DEFAULT 0,
+    price_per_unit REAL    NOT NULL,
+    storage_loc    TEXT    NOT NULL DEFAULT 'main',
+    modified_at    TEXT    NOT NULL,
+    FOREIGN KEY (cat_ref) REFERENCES categories(id)
+);
+"""
+
+_CHANGELOG_DDL = """
+CREATE TABLE schema_changelog (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_name      TEXT    NOT NULL,
+    change_type     TEXT    NOT NULL,
+    old_column      TEXT,
+    new_column      TEXT,
+    performed_by    TEXT    NOT NULL DEFAULT 'system',
+    timestamp       TEXT    NOT NULL
+);
+"""
+
+_CATEGORIES_DATA: List[Tuple] = [
+    (1, "Electronics",    "Consumer electronics and gadgets",  None, 1),
+    (2, "Cables",         "Connectivity cables and adapters",  1,    1),
+    (3, "Software",       "Software licenses and subscriptions", None, 1),
+    (4, "Office",         "Office supplies and equipment",     None, 1),
+    (5, "Peripherals",    "Computer peripherals",              1,    1),
+]
+
+_INVENTORY_DATA: List[Tuple] = [
+    (1,  "USB-C Hub 7-Port",       1,  45, 34.99, "main",    "2025-01-10"),
+    (2,  "Cat6 Ethernet 10m",      2, 200,  8.49, "main",    "2025-01-10"),
+    (3,  "Cloud IDE License",      3,  50, 29.99, "east",    "2025-01-10"),
+    (4,  "Standing Desk Mat",      4,  30, 44.99, "main",    "2025-01-10"),
+    (5,  "Mechanical Keyboard",    5,  75, 89.99, "west",    "2025-01-10"),
+    (6,  "Thunderbolt Cable 2m",   2, 150, 19.99, "main",    "2025-01-10"),
+    (7,  "Antivirus Suite 1yr",    3, 100, 39.99, "east",    "2025-01-10"),
+    (8,  "Ergonomic Mouse",        5,  60, 59.99, "west",    "2025-01-10"),
+    (9,  "Webcam HD 1080p",        5,  40, 49.99, "main",    "2025-01-10"),
+    (10, "Whiteboard Markers 12pk", 4, 300,  7.99, "main",   "2025-01-10"),
+]
+
+_SCHEMA_CHANGELOG: List[Tuple] = [
+    (None, "inventory", "RENAME_COLUMN", "product_name", "item_label",     "junior_dba", "2025-01-14 23:10:00"),
+    (None, "inventory", "RENAME_COLUMN", "category_id",  "cat_ref",        "junior_dba", "2025-01-14 23:10:01"),
+    (None, "inventory", "RENAME_COLUMN", "quantity",      "qty_on_hand",   "junior_dba", "2025-01-14 23:10:02"),
+    (None, "inventory", "RENAME_COLUMN", "unit_price",    "price_per_unit","junior_dba", "2025-01-14 23:10:03"),
+    (None, "inventory", "RENAME_COLUMN", "warehouse",     "storage_loc",   "junior_dba", "2025-01-14 23:10:04"),
+    (None, "inventory", "RENAME_COLUMN", "last_updated",  "modified_at",   "junior_dba", "2025-01-14 23:10:05"),
+    (None, "categories", "RENAME_COLUMN", "name",         "category_label","junior_dba", "2025-01-14 23:11:00"),
+    (None, "categories", "RENAME_COLUMN", "description",  "detail_text",   "junior_dba", "2025-01-14 23:11:01"),
+    (None, "categories", "RENAME_COLUMN", "parent_id",    "parent_ref",    "junior_dba", "2025-01-14 23:11:02"),
+    (None, "categories", "RENAME_COLUMN", "active",       "is_enabled",    "junior_dba", "2025-01-14 23:11:03"),
+]
+
+
+def _task4_corrupted(conn: sqlite3.Connection) -> None:
+    conn.execute(_CATEGORIES_CORRUPTED_DDL)
+    conn.execute(_INVENTORY_CORRUPTED_DDL)
+    conn.execute(_CHANGELOG_DDL)
+    # Insert data using corrupted column names
+    conn.executemany(
+        "INSERT INTO categories (id, category_label, detail_text, parent_ref, is_enabled) VALUES (?,?,?,?,?)",
+        _CATEGORIES_DATA,
+    )
+    conn.executemany(
+        "INSERT INTO inventory (id, item_label, cat_ref, qty_on_hand, price_per_unit, storage_loc, modified_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        _INVENTORY_DATA,
+    )
+    conn.executemany(
+        "INSERT INTO schema_changelog (table_name, change_type, old_column, new_column, performed_by, timestamp) "
+        "VALUES (?,?,?,?,?,?)",
+        [(c[1], c[2], c[3], c[4], c[5], c[6]) for c in _SCHEMA_CHANGELOG],
+    )
+
+
+def _task4_golden(conn: sqlite3.Connection) -> None:
+    conn.execute(_CATEGORIES_GOLDEN_DDL)
+    conn.execute(_INVENTORY_GOLDEN_DDL)
+    conn.execute(_CHANGELOG_DDL)
+    conn.executemany(
+        "INSERT INTO categories VALUES (?,?,?,?,?)",
+        _CATEGORIES_DATA,
+    )
+    conn.executemany(
+        "INSERT INTO inventory VALUES (?,?,?,?,?,?,?)",
+        _INVENTORY_DATA,
+    )
+    conn.executemany(
+        "INSERT INTO schema_changelog (table_name, change_type, old_column, new_column, performed_by, timestamp) "
+        "VALUES (?,?,?,?,?,?)",
+        [(c[1], c[2], c[3], c[4], c[5], c[6]) for c in _SCHEMA_CHANGELOG],
+    )
+
+
+# ── TASK 5 : Referential Maze ──────────────────────────────────────────
+#
+# Scenario: A cross-database sync job crashed partway through. The production
+# database has missing records, orphaned FK references, and partial data
+# scattered across audit tables. Some projects were deliberately decommissioned
+# and should NOT be restored.
+#
+# Agent goal:
+#   1. Identify which projects are missing from the projects table
+#   2. Check decommission_log to avoid restoring decommissioned projects
+#   3. Use sync_audit to find the data for legitimately missing records
+#   4. Restore missing departments, projects, assignments, and budgets
+#      in the correct FK order (departments first, then projects, etc.)
+#
+# Trap: The incident ticket blames "budgets table" but the real problem
+# spans all 4 core tables. Also, 2 of the "missing" projects are
+# decommissioned and must NOT be restored.
+
+_DEPT_DDL = """
+CREATE TABLE departments (
+    id      INTEGER PRIMARY KEY,
+    name    TEXT    NOT NULL,
+    head    TEXT    NOT NULL,
+    floor   INTEGER NOT NULL DEFAULT 1
+);
+"""
+
+_PROJ_DDL = """
+CREATE TABLE projects (
+    id            INTEGER PRIMARY KEY,
+    department_id INTEGER NOT NULL,
+    name          TEXT    NOT NULL,
+    status        TEXT    NOT NULL DEFAULT 'active',
+    start_date    TEXT    NOT NULL,
+    FOREIGN KEY (department_id) REFERENCES departments(id)
+);
+"""
+
+_ASSIGN_DDL = """
+CREATE TABLE assignments (
+    id          INTEGER PRIMARY KEY,
+    project_id  INTEGER NOT NULL,
+    employee    TEXT    NOT NULL,
+    role        TEXT    NOT NULL DEFAULT 'contributor',
+    hours       INTEGER NOT NULL DEFAULT 40,
+    FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+"""
+
+_BUDGET_DDL = """
+CREATE TABLE budgets (
+    id          INTEGER PRIMARY KEY,
+    project_id  INTEGER NOT NULL,
+    quarter     TEXT    NOT NULL,
+    amount      REAL    NOT NULL,
+    approved    INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+"""
+
+_DECOM_DDL = """
+CREATE TABLE decommission_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type     TEXT    NOT NULL,
+    entity_id       INTEGER NOT NULL,
+    reason          TEXT    NOT NULL,
+    decommissioned  TEXT    NOT NULL
+);
+"""
+
+_SYNC_AUDIT_DDL = """
+CREATE TABLE sync_audit (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_name  TEXT    NOT NULL,
+    record_id   INTEGER NOT NULL,
+    record_json TEXT    NOT NULL,
+    sync_status TEXT    NOT NULL DEFAULT 'pending',
+    timestamp   TEXT    NOT NULL
+);
+"""
+
+# 6 departments (all present in both corrupted and golden)
+_DEPT_DATA: List[Tuple] = [
+    (1, "Engineering",   "Alice Chen",    3),
+    (2, "Marketing",     "Bob Smith",     2),
+    (3, "Finance",       "Carol Davis",   4),
+    (4, "Operations",    "Dave Wilson",   1),
+    (5, "Research",      "Eve Martinez",  5),
+    (6, "Legal",         "Frank Brown",   4),
+]
+
+# 10 projects in golden state. In corrupted: projects 3, 5, 7, 9 are missing.
+# BUT projects 5 and 9 are decommissioned (should NOT be restored).
+# Only projects 3 and 7 should be re-inserted.
+_PROJ_ALL: List[Tuple] = [
+    (1,  1, "Backend Rewrite",       "active",     "2024-06-01"),
+    (2,  2, "Brand Refresh",         "active",     "2024-07-15"),
+    (3,  1, "API Gateway",           "active",     "2024-08-01"),  # MISSING, restore
+    (4,  3, "Budget Dashboard",      "active",     "2024-09-01"),
+    (5,  5, "Legacy Cleanup",        "completed",  "2023-01-10"),  # MISSING, DECOMMISSIONED
+    (6,  4, "Warehouse Automation",  "active",     "2024-10-15"),
+    (7,  2, "Customer Portal",       "active",     "2024-11-01"),  # MISSING, restore
+    (8,  6, "Compliance Audit",      "active",     "2024-11-15"),
+    (9,  5, "Old Analytics",         "completed",  "2022-06-01"),  # MISSING, DECOMMISSIONED
+    (10, 3, "Tax Automation",        "active",     "2025-01-01"),
+]
+
+_MISSING_PROJECT_IDS = {3, 5, 7, 9}
+_DECOMMISSIONED_IDS = {5, 9}   # these should NOT be restored
+_RESTORE_PROJECT_IDS = {3, 7}  # these SHOULD be restored
+
+_PROJ_CORRUPTED = [p for p in _PROJ_ALL if p[0] not in _MISSING_PROJECT_IDS]
+# Golden projects exclude decommissioned ones
+_PROJ_GOLDEN = [p for p in _PROJ_ALL if p[0] not in _DECOMMISSIONED_IDS]
+
+# 15 assignments (some reference missing projects)
+_ASSIGN_ALL: List[Tuple] = [
+    (1,  1, "Alice Chen",      "lead",        40),
+    (2,  1, "Grace Lee",       "contributor", 30),
+    (3,  2, "Bob Smith",       "lead",        40),
+    (4,  3, "Hank Miller",     "lead",        40),  # refs missing project 3
+    (5,  3, "Ivy Taylor",      "contributor", 25),  # refs missing project 3
+    (6,  4, "Carol Davis",     "lead",        35),
+    (7,  6, "Dave Wilson",     "lead",        40),
+    (8,  7, "Jack Anderson",   "lead",        40),  # refs missing project 7
+    (9,  7, "Karen Thomas",    "contributor", 20),  # refs missing project 7
+    (10, 8, "Frank Brown",     "lead",        40),
+    (11, 10, "Leo Garcia",     "lead",        40),
+    (12, 1, "Mia Johnson",     "contributor", 15),
+    (13, 4, "Noah Williams",   "contributor", 30),
+    (14, 6, "Olivia Martinez", "contributor", 25),
+    (15, 10, "Paul Robinson",  "contributor", 20),
+]
+
+_ASSIGN_CORRUPTED = [a for a in _ASSIGN_ALL if a[1] not in _MISSING_PROJECT_IDS]
+# Golden includes assignments for restored projects but not decommissioned
+_ASSIGN_GOLDEN = [a for a in _ASSIGN_ALL if a[1] not in _DECOMMISSIONED_IDS]
+
+# 10 budgets (some reference missing projects)
+_BUDGET_ALL: List[Tuple] = [
+    (1,  1, "2025-Q1", 150000.0, 1),
+    (2,  2, "2025-Q1",  80000.0, 1),
+    (3,  3, "2025-Q1", 120000.0, 1),  # refs missing project 3
+    (4,  4, "2025-Q1",  95000.0, 1),
+    (5,  6, "2025-Q1", 200000.0, 1),
+    (6,  7, "2025-Q1",  60000.0, 0),  # refs missing project 7
+    (7,  8, "2025-Q1",  45000.0, 1),
+    (8,  10, "2025-Q1", 110000.0, 1),
+    (9,  1, "2025-Q2", 160000.0, 0),
+    (10, 4, "2025-Q2", 100000.0, 0),
+]
+
+_BUDGET_CORRUPTED = [b for b in _BUDGET_ALL if b[1] not in _MISSING_PROJECT_IDS]
+_BUDGET_GOLDEN = [b for b in _BUDGET_ALL if b[1] not in _DECOMMISSIONED_IDS]
+
+# Decommission log - records for projects 5 and 9
+_DECOM_DATA: List[Tuple] = [
+    (None, "project", 5, "Project completed and archived. All deliverables transferred.", "2024-06-15"),
+    (None, "project", 9, "Legacy system sunset. Replaced by modern analytics platform.", "2024-03-01"),
+]
+
+# Sync audit - contains the data needed to restore projects 3 and 7
+# Also contains entries for decommissioned projects (trap: agent must skip these)
+_SYNC_AUDIT_DATA: List[Tuple] = [
+    (None, "projects",    3, json.dumps({"id": 3, "department_id": 1, "name": "API Gateway", "status": "active", "start_date": "2024-08-01"}), "failed", "2025-02-10 03:40:01"),
+    (None, "projects",    5, json.dumps({"id": 5, "department_id": 5, "name": "Legacy Cleanup", "status": "completed", "start_date": "2023-01-10"}), "failed", "2025-02-10 03:40:02"),
+    (None, "projects",    7, json.dumps({"id": 7, "department_id": 2, "name": "Customer Portal", "status": "active", "start_date": "2024-11-01"}), "failed", "2025-02-10 03:40:03"),
+    (None, "projects",    9, json.dumps({"id": 9, "department_id": 5, "name": "Old Analytics", "status": "completed", "start_date": "2022-06-01"}), "failed", "2025-02-10 03:40:04"),
+    (None, "assignments", 4, json.dumps({"id": 4, "project_id": 3, "employee": "Hank Miller", "role": "lead", "hours": 40}), "failed", "2025-02-10 03:41:01"),
+    (None, "assignments", 5, json.dumps({"id": 5, "project_id": 3, "employee": "Ivy Taylor", "role": "contributor", "hours": 25}), "failed", "2025-02-10 03:41:02"),
+    (None, "assignments", 8, json.dumps({"id": 8, "project_id": 7, "employee": "Jack Anderson", "role": "lead", "hours": 40}), "failed", "2025-02-10 03:41:03"),
+    (None, "assignments", 9, json.dumps({"id": 9, "project_id": 7, "employee": "Karen Thomas", "role": "contributor", "hours": 20}), "failed", "2025-02-10 03:41:04"),
+    (None, "budgets",     3, json.dumps({"id": 3, "project_id": 3, "quarter": "2025-Q1", "amount": 120000.0, "approved": 1}), "failed", "2025-02-10 03:42:01"),
+    (None, "budgets",     6, json.dumps({"id": 6, "project_id": 7, "quarter": "2025-Q1", "amount": 60000.0, "approved": 0}), "failed", "2025-02-10 03:42:02"),
+]
+
+
+def _task5_corrupted(conn: sqlite3.Connection) -> None:
+    conn.execute(_DEPT_DDL)
+    conn.execute(_PROJ_DDL)
+    conn.execute(_ASSIGN_DDL)
+    conn.execute(_BUDGET_DDL)
+    conn.execute(_DECOM_DDL)
+    conn.execute(_SYNC_AUDIT_DDL)
+
+    conn.executemany("INSERT INTO departments VALUES (?,?,?,?)", _DEPT_DATA)
+    conn.executemany("INSERT INTO projects VALUES (?,?,?,?,?)", _PROJ_CORRUPTED)
+    conn.executemany("INSERT INTO assignments VALUES (?,?,?,?,?)", _ASSIGN_CORRUPTED)
+    conn.executemany("INSERT INTO budgets VALUES (?,?,?,?,?)", _BUDGET_CORRUPTED)
+    conn.executemany(
+        "INSERT INTO decommission_log (entity_type, entity_id, reason, decommissioned) VALUES (?,?,?,?)",
+        [(d[1], d[2], d[3], d[4]) for d in _DECOM_DATA],
+    )
+    conn.executemany(
+        "INSERT INTO sync_audit (table_name, record_id, record_json, sync_status, timestamp) VALUES (?,?,?,?,?)",
+        [(s[1], s[2], s[3], s[4], s[5]) for s in _SYNC_AUDIT_DATA],
+    )
+
+
+def _task5_golden(conn: sqlite3.Connection) -> None:
+    conn.execute(_DEPT_DDL)
+    conn.execute(_PROJ_DDL)
+    conn.execute(_ASSIGN_DDL)
+    conn.execute(_BUDGET_DDL)
+    conn.execute(_DECOM_DDL)
+    conn.execute(_SYNC_AUDIT_DDL)
+
+    conn.executemany("INSERT INTO departments VALUES (?,?,?,?)", _DEPT_DATA)
+    conn.executemany("INSERT INTO projects VALUES (?,?,?,?,?)", _PROJ_GOLDEN)
+    conn.executemany("INSERT INTO assignments VALUES (?,?,?,?,?)", _ASSIGN_GOLDEN)
+    conn.executemany("INSERT INTO budgets VALUES (?,?,?,?,?)", _BUDGET_GOLDEN)
+    conn.executemany(
+        "INSERT INTO decommission_log (entity_type, entity_id, reason, decommissioned) VALUES (?,?,?,?)",
+        [(d[1], d[2], d[3], d[4]) for d in _DECOM_DATA],
+    )
+    conn.executemany(
+        "INSERT INTO sync_audit (table_name, record_id, record_json, sync_status, timestamp) VALUES (?,?,?,?,?)",
+        [(s[1], s[2], s[3], s[4], s[5]) for s in _SYNC_AUDIT_DATA],
+    )
