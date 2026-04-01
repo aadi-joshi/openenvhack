@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """DB-ER Baseline Inference Script.
 
-Runs an LLM-based agent against all three DB-ER tasks using the OpenAI client.
+Runs an LLM-based agent against all five DB-ER tasks using the OpenAI client.
 
 Environment variables (required):
   API_BASE_URL   : OpenAI-compatible LLM endpoint
@@ -17,6 +17,11 @@ Optional:
 Usage:
   python inference.py
   TASK_IDS=2 python inference.py
+
+Stdout format (required by OpenEnv spec):
+  [START] task=<slug> env=db_er model=<model>
+  [STEP]  step=<n> action=<str> reward=<0.00> done=<true|false> error=<msg|null>
+  [END]   success=<true|false> steps=<n> rewards=<r1,r2,...>
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
-#  Configuration 
+#  Configuration
 
 API_BASE_URL: str = os.environ["API_BASE_URL"]
 MODEL_NAME: str = os.environ["MODEL_NAME"]
@@ -44,11 +49,29 @@ TASK_IDS: List[int] = [
     if t.strip()
 ]
 
-#  LLM client 
+#  Task metadata
+
+TASK_SLUGS: Dict[int, str] = {
+    1: "phantom-duplicates",
+    2: "cascading-failure",
+    3: "payroll-black-hole",
+    4: "schema-drift",
+    5: "referential-maze",
+}
+
+TASK_NAMES: Dict[int, str] = {
+    1: "Easy -- Phantom Duplicates",
+    2: "Medium -- Cascading Failure",
+    3: "Medium-Hard -- Payroll Black Hole",
+    4: "Hard -- Schema Drift",
+    5: "Very Hard -- Referential Maze",
+}
+
+#  LLM client
 
 llm_client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
-#  System prompt 
+#  System prompt
 
 SYSTEM_PROMPT = """You are an expert Senior Site Reliability Engineer (SRE) and Database Administrator (DBA).
 You have been paged to diagnose and repair a corrupted production SQLite database.
@@ -93,11 +116,10 @@ You must respond with a SINGLE JSON object -- no other text, no markdown fences.
 Always respond with valid JSON. Never include explanations outside the JSON."""
 
 
-#  Observation formatter 
+#  Observation formatter
 
 def format_observation(obs, history: List[str]) -> str:
     """Convert an observation object/dict into a rich text prompt for the LLM."""
-    # Support both object (in-process) and dict (HTTP) observations
     def g(key: str, default=None):
         if isinstance(obs, dict):
             return obs.get(key, default)
@@ -119,7 +141,6 @@ def format_observation(obs, history: List[str]) -> str:
     result = g("last_query_result", [])
     if result:
         result_str = json.dumps(result, indent=2) if not isinstance(result, str) else result
-        # Truncate very long results to avoid token overflow
         if len(result_str) > 3000:
             result_str = result_str[:3000] + "\n... [truncated]"
         lines += ["Result:", result_str]
@@ -144,18 +165,16 @@ def format_observation(obs, history: List[str]) -> str:
     return "\n".join(lines)
 
 
-#  JSON action parser 
+#  JSON action parser
 
 def parse_action(response_text: str) -> Optional[Dict[str, Any]]:
     """Extract the first valid JSON object from the model's response."""
     text = response_text.strip()
 
-    # Strip markdown code fences if present
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     text = text.strip()
 
-    # Try direct parse
     try:
         obj = json.loads(text)
         if "action_type" in obj:
@@ -163,7 +182,6 @@ def parse_action(response_text: str) -> Optional[Dict[str, Any]]:
     except json.JSONDecodeError:
         pass
 
-    # Extract first JSON object via regex
     match = re.search(r"\{[^{}]*\}", text, re.DOTALL)
     if match:
         try:
@@ -173,7 +191,6 @@ def parse_action(response_text: str) -> Optional[Dict[str, Any]]:
         except json.JSONDecodeError:
             pass
 
-    # Last resort: try to extract just the action_type and key fields
     action_type_match = re.search(r'"action_type"\s*:\s*"([^"]+)"', text)
     if action_type_match:
         action_type = action_type_match.group(1)
@@ -189,7 +206,7 @@ def parse_action(response_text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-#  Fallback actions per task 
+#  Fallback actions per task
 
 FALLBACK_ACTIONS: Dict[int, str] = {
     1: '{"action_type": "execute_sql", "query": "SELECT id, email, username FROM users ORDER BY email, id"}',
@@ -200,11 +217,50 @@ FALLBACK_ACTIONS: Dict[int, str] = {
 }
 
 
-#  In-process environment runner 
+#  Stdout helpers (spec-required log lines)
+
+def _fmt_action(action_dict: Dict[str, Any]) -> str:
+    """Compact single-line action string for [STEP] output."""
+    if action_dict["action_type"] == "execute_sql":
+        q = re.sub(r"\s+", " ", action_dict.get("query", "")).strip()
+        if len(q) > 80:
+            q = q[:77] + "..."
+        return f"execute_sql({q!r})"
+    else:
+        notes = (action_dict.get("notes", "") or "")[:60]
+        return f"submit_resolution({notes!r})"
+
+
+def emit_start(task_id: int) -> None:
+    slug = TASK_SLUGS.get(task_id, f"task-{task_id}")
+    print(f"[START] task={slug} env=db_er model={MODEL_NAME}", flush=True)
+
+
+def emit_step(step: int, action_dict: Dict[str, Any], reward: float,
+              done: bool, error: str) -> None:
+    action_str = _fmt_action(action_dict)
+    error_str = error.replace("\n", " ").strip() if error else "null"
+    done_str = "true" if done else "false"
+    print(
+        f"[STEP] step={step} action={action_str} "
+        f"reward={reward:.2f} done={done_str} error={error_str}",
+        flush=True,
+    )
+
+
+def emit_end(success: bool, steps: int, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    success_str = "true" if success else "false"
+    print(
+        f"[END] success={success_str} steps={steps} rewards={rewards_str}",
+        flush=True,
+    )
+
+
+#  In-process environment runner
 
 def run_inprocess(task_id: int) -> float:
     """Run one episode against the in-process environment."""
-    # Import here to avoid top-level dependency if ENV_BASE_URL is set
     from db_er.models import DBERAction
     from server.environment import DBEREnvironment
 
@@ -216,13 +272,7 @@ def run_inprocess(task_id: int) -> float:
         env.close()
 
 
-def _step_inprocess(env_step_fn, action_dict: Dict[str, Any]):
-    from db_er.models import DBERAction
-    action = DBERAction(**action_dict)
-    return env_step_fn(action)
-
-
-#  HTTP environment runner 
+#  HTTP environment runner
 
 def run_http(base_url: str, task_id: int) -> float:
     """Run one episode against a remote DB-ER server."""
@@ -230,7 +280,7 @@ def run_http(base_url: str, task_id: int) -> float:
 
     reset_resp = requests.post(
         f"{base_url}/reset",
-        json={"seed": (task_id - 1)},  # seed->task mapping: 0->1, 1->2, 2->3
+        json={"task_id": task_id},
         timeout=30,
     )
     reset_resp.raise_for_status()
@@ -243,13 +293,12 @@ def run_http(base_url: str, task_id: int) -> float:
             timeout=30,
         )
         resp.raise_for_status()
-        data = resp.json()
-        return data  # return raw dict
+        return resp.json()
 
     return _agent_loop(obs, step_http, task_id, env_type="http")
 
 
-#  Core agent loop 
+#  Core agent loop
 
 def _agent_loop(initial_obs, step_fn, task_id: int, env_type: str) -> float:
     """Run the LLM agent for up to MAX_STEPS steps. Returns final reward."""
@@ -261,102 +310,127 @@ def _agent_loop(initial_obs, step_fn, task_id: int, env_type: str) -> float:
 
     obs = initial_obs
     history: List[str] = []
+    rewards: List[float] = []
     final_reward = 0.0
+    steps_taken = 0
+    success = False
 
-    for step in range(1, MAX_STEPS + 1):
-        done = g(obs, "done", False)
-        if done:
-            print(f"  [done=True at step {step - 1}]")
-            break
+    emit_start(task_id)
 
-        budget = g(obs, "budget_remaining", 0)
-        if budget <= 0:
-            print("  [budget exhausted]")
-            break
+    try:
+        for step in range(1, MAX_STEPS + 1):
+            done = g(obs, "done", False)
+            if done:
+                success = True
+                print(f"  [done=True at step {step - 1}]", file=sys.stderr)
+                break
 
-        user_prompt = format_observation(obs, history)
+            budget = g(obs, "budget_remaining", 0)
+            if budget <= 0:
+                print("  [budget exhausted]", file=sys.stderr)
+                break
 
-        try:
-            completion = llm_client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=TEMPERATURE,
-                max_tokens=512,
+            user_prompt = format_observation(obs, history)
+
+            try:
+                completion = llm_client.chat.completions.create(
+                    model=MODEL_NAME,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=TEMPERATURE,
+                    max_tokens=512,
+                )
+                response_text = completion.choices[0].message.content or ""
+            except Exception as exc:
+                print(f"  Step {step}: LLM call failed ({exc}), using fallback.", file=sys.stderr)
+                response_text = FALLBACK_ACTIONS.get(task_id, FALLBACK_ACTIONS[1])
+
+            action_dict = parse_action(response_text)
+            if action_dict is None:
+                print(f"  Step {step}: Could not parse action from: {response_text[:120]!r}", file=sys.stderr)
+                action_dict = json.loads(FALLBACK_ACTIONS.get(task_id, FALLBACK_ACTIONS[1]))
+
+            print(
+                f"  Step {step:2d}: [{action_dict['action_type']}] "
+                f"{str(action_dict.get('query') or action_dict.get('notes', ''))[:80]}",
+                file=sys.stderr,
             )
-            response_text = completion.choices[0].message.content or ""
-        except Exception as exc:
-            print(f"  Step {step}: LLM call failed ({exc}), using fallback.")
-            response_text = FALLBACK_ACTIONS.get(task_id, FALLBACK_ACTIONS[1])
 
-        action_dict = parse_action(response_text)
-        if action_dict is None:
-            print(f"  Step {step}: Could not parse action from: {response_text[:120]!r}")
-            action_dict = json.loads(FALLBACK_ACTIONS.get(task_id, FALLBACK_ACTIONS[1]))
+            reward = 0.0
+            done = False
+            error_str = ""
 
-        print(f"  Step {step:2d}: [{action_dict['action_type']}] "
-              f"{str(action_dict.get('query') or action_dict.get('notes', ''))[:80]}")
+            try:
+                if env_type == "inprocess":
+                    from db_er.models import DBERAction
+                    result = step_fn(DBERAction(**action_dict))
+                    reward = float(getattr(result, "reward", None) or 0.0)
+                    done = bool(getattr(result, "done", False))
+                    error_str = getattr(result, "error_logs", "") or ""
+                    obs = result
+                else:
+                    result = step_fn(action_dict)
+                    reward = float(result.get("reward") or 0.0)
+                    done = bool(result.get("done", False))
+                    obs = result.get("observation", result)
+                    error_str = (obs.get("error_logs", "") if isinstance(obs, dict)
+                                 else getattr(obs, "error_logs", "")) or ""
+            except Exception as exc:
+                error_str = str(exc)
+                print(f"  Step {step}: Environment error: {exc}", file=sys.stderr)
+                emit_step(step, action_dict, 0.0, False, error_str)
+                rewards.append(0.0)
+                steps_taken = step
+                break
 
-        try:
-            if env_type == "inprocess":
-                from db_er.models import DBERAction
-                result = step_fn(DBERAction(**action_dict))
-                reward = getattr(result, "reward", None) or 0.0
-                done = getattr(result, "done", False)
-                obs = result  # observation is the result itself for in-process
-            else:
-                result = step_fn(action_dict)
-                reward = result.get("reward") or 0.0
-                done = result.get("done", False)
-                obs = result.get("observation", result)
-        except Exception as exc:
-            print(f"  Step {step}: Environment error: {exc}")
-            break
+            steps_taken = step
+            rewards.append(reward)
+            final_reward = reward
 
-        history.append(
-            f"Step {step:2d}: {action_dict['action_type']} "
-            f"-> reward={reward:+.3f} done={done}"
-        )
-        final_reward = reward
+            emit_step(step, action_dict, reward, done, error_str)
 
-        viol = g(obs, "violation_count", "?")
-        print(f"           reward={reward:+.3f} | violations={viol} | budget={g(obs, 'budget_remaining', '?')}")
+            history.append(
+                f"Step {step:2d}: {action_dict['action_type']} "
+                f"-> reward={reward:+.3f} done={done}"
+            )
 
-        if done:
-            print(f"  [episode complete at step {step}]")
-            break
+            viol = g(obs, "violation_count", "?")
+            print(
+                f"           reward={reward:+.3f} | violations={viol} | budget={g(obs, 'budget_remaining', '?')}",
+                file=sys.stderr,
+            )
+
+            if done:
+                success = True
+                print(f"  [episode complete at step {step}]", file=sys.stderr)
+                break
+
+    finally:
+        emit_end(success, steps_taken, rewards)
 
     return final_reward
 
 
-#  Main 
+#  Main
 
 def main() -> None:
-    print("=" * 70)
-    print("DB-ER Baseline Inference Script")
-    print(f"Model:    {MODEL_NAME}")
-    print(f"Endpoint: {API_BASE_URL}")
-    print(f"Tasks:    {TASK_IDS}")
-    print(f"MaxSteps: {MAX_STEPS}")
-    print("=" * 70)
-
-    task_names = {
-        1: "Easy -- Phantom Duplicates",
-        2: "Medium -- Cascading Failure",
-        3: "Medium-Hard -- Payroll Black Hole",
-        4: "Hard -- Schema Drift",
-        5: "Very Hard -- Referential Maze",
-    }
+    print("=" * 70, file=sys.stderr)
+    print("DB-ER Baseline Inference Script", file=sys.stderr)
+    print(f"Model:    {MODEL_NAME}", file=sys.stderr)
+    print(f"Endpoint: {API_BASE_URL}", file=sys.stderr)
+    print(f"Tasks:    {TASK_IDS}", file=sys.stderr)
+    print(f"MaxSteps: {MAX_STEPS}", file=sys.stderr)
+    print("=" * 70, file=sys.stderr)
 
     results: Dict[int, float] = {}
     start_time = time.time()
 
     for task_id in TASK_IDS:
-        print(f"\n{'' * 70}")
-        print(f"TASK {task_id}: {task_names.get(task_id, '?')}")
-        print("-" * 70)
+        print(f"\n{'=' * 70}", file=sys.stderr)
+        print(f"TASK {task_id}: {TASK_NAMES.get(task_id, '?')}", file=sys.stderr)
+        print("-" * 70, file=sys.stderr)
 
         t0 = time.time()
         try:
@@ -365,28 +439,27 @@ def main() -> None:
             else:
                 score = run_inprocess(task_id)
         except Exception as exc:
-            print(f"  ERROR during task {task_id}: {exc}")
+            print(f"  ERROR during task {task_id}: {exc}", file=sys.stderr)
             score = 0.0
 
         elapsed = time.time() - t0
         results[task_id] = score
-        print(f"\n  -> Task {task_id} final score: {score:.4f}  [{elapsed:.1f}s]")
+        print(f"\n  -> Task {task_id} final score: {score:.4f}  [{elapsed:.1f}s]", file=sys.stderr)
 
     total_elapsed = time.time() - start_time
 
-    print(f"\n{'=' * 70}")
-    print("RESULTS SUMMARY")
-    print(f"{'=' * 70}")
+    print(f"\n{'=' * 70}", file=sys.stderr)
+    print("RESULTS SUMMARY", file=sys.stderr)
+    print(f"{'=' * 70}", file=sys.stderr)
     for task_id, score in results.items():
         bar = "#" * int(score * 20) + "." * (20 - int(score * 20))
-        print(f"  Task {task_id} [{task_names.get(task_id, '?'):35s}]  {bar}  {score:.4f}")
+        print(f"  Task {task_id} [{TASK_NAMES.get(task_id, '?'):35s}]  {bar}  {score:.4f}", file=sys.stderr)
 
     avg = sum(results.values()) / len(results) if results else 0.0
-    print(f"\n  Average score: {avg:.4f}")
-    print(f"  Total runtime: {total_elapsed:.1f}s")
-    print("=" * 70)
+    print(f"\n  Average score: {avg:.4f}", file=sys.stderr)
+    print(f"  Total runtime: {total_elapsed:.1f}s", file=sys.stderr)
+    print("=" * 70, file=sys.stderr)
 
-    # Exit with non-zero if average is very low (useful for CI)
     if avg < 0.1:
         sys.exit(1)
 
