@@ -42,7 +42,7 @@ Someone ran a cleanup script that deleted three products still referenced by act
 A migration script died partway through. The incident log blames a timeout, but that is a red herring. The real problem is corrupted duplicate employee IDs in the source table that caused the crash. Clean the corruption, then finish the migration and preserve every salary mapping correctly.
 
 **Task 4 - Schema Drift (Hard)**
-A junior DBA ran a schema standardization script that renamed columns in the `inventory` and `categories` tables. The application code expects the original column names and is now broken. The `schema_changelog` table has a record of every rename. Reverse the column renames while preserving all data. Requires the SQLite CREATE-INSERT-DROP-RENAME pattern since ALTER TABLE column rename support is limited.
+A junior DBA ran a schema standardization script that renamed columns in the `inventory` and `categories` tables. The application code expects the original column names and is now broken. The `schema_changelog` table has a record of every rename. Reverse the column renames using `ALTER TABLE <table> RENAME COLUMN <current> TO <original>` for each entry.
 
 **Task 5 - Referential Maze (Very Hard)**
 A cross-database sync job crashed partway through, leaving orphaned FK references and missing records across four interrelated tables (`departments`, `projects`, `assignments`, `budgets`). The incident ticket blames a network timeout, but the real problem is scattered across all four tables. Not all missing records should be restored: some projects were deliberately decommissioned last quarter. The agent must check `decommission_log` before re-inserting anything and use `sync_audit` to find the data for legitimately missing records. Restoring a decommissioned project is penalized.
@@ -63,6 +63,47 @@ Each episode ends when the agent calls `submit_resolution` or runs out of budget
 - DROP TABLE on any core table
 - DELETE without a WHERE clause
 - Removing more than 10% of rows from a core table in a single mutation
+
+---
+
+## Action Space
+
+The agent has two actions:
+
+| Action | Fields | Budget Cost |
+|--------|--------|-------------|
+| `execute_sql` | `query` (str) - any valid SQLite statement | -1 for SELECT/PRAGMA, -5 for INSERT/UPDATE/DELETE/ALTER/CREATE |
+| `submit_resolution` | `notes` (str) - description of what was fixed | 0 (ends episode, triggers grader) |
+
+## Observation Space
+
+Every `reset()` and `step()` returns a `DBERObservation` with these fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `incident_ticket` | str | The pager alert text describing the incident |
+| `task_id` | int | Active task (1-5) |
+| `last_action_type` | str | SELECT, MUTATION, META, ERROR, or NONE |
+| `last_query_result` | list[dict] or str | Rows from the last SELECT, or a status string for mutations |
+| `error_logs` | str | Exception message from the last action (empty if none) |
+| `db_summary` | dict | Live snapshot: table names and current row counts |
+| `violation_count` | int | Current broken constraint count; decreasing this gives +0.2 reward |
+| `budget_remaining` | int | Remaining action budget (starts at 100) |
+| `step_count` | int | Number of steps taken this episode |
+
+## Baseline Scores
+
+Running `inference.py` with a capable model (e.g. Llama-3.3-70B-Instruct) produces approximate scores:
+
+| Task | Expected Range | Notes |
+|------|---------------|-------|
+| Task 1 - Phantom Duplicates | 0.85 - 1.0 | Straightforward once duplicates are found |
+| Task 2 - Cascading Failure | 0.75 - 1.0 | Requires reading and parsing JSON audit logs |
+| Task 3 - Payroll Black Hole | 0.50 - 0.85 | Misleading incident ticket; two-phase repair |
+| Task 4 - Schema Drift | 0.60 - 1.0 | 10 column renames across 2 tables |
+| Task 5 - Referential Maze | 0.40 - 0.85 | Decommission trap penalizes naive restore |
+
+A perfect repair on every task is achievable. The `tests/test_dumb_agent.py` file contains verified perfect-score sequences for all five tasks.
 
 ---
 
