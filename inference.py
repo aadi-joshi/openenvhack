@@ -37,8 +37,8 @@ from openai import OpenAI
 
 #  Configuration
 
-API_BASE_URL: Optional[str] = os.environ.get("API_BASE_URL")
-MODEL_NAME: Optional[str] = os.environ.get("MODEL_NAME")
+API_BASE_URL: str = os.environ.get("API_BASE_URL", "https://api-inference.huggingface.co/v1")
+MODEL_NAME: str = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.3-70B-Instruct")
 HF_TOKEN: Optional[str] = os.environ.get("HF_TOKEN")
 ENV_BASE_URL: Optional[str] = os.environ.get("ENV_BASE_URL")
 MAX_STEPS: int = int(os.environ.get("MAX_STEPS", "40"))
@@ -418,16 +418,11 @@ def _agent_loop(initial_obs, step_fn, task_id: int, env_type: str) -> float:
 def main() -> None:
     global llm_client
 
-    # Validate required environment variables before doing anything else.
-    _missing = [name for name in ("API_BASE_URL", "MODEL_NAME", "HF_TOKEN")
-                if not os.environ.get(name)]
-    if _missing:
+    # HF_TOKEN has no default and is required to authenticate with the LLM endpoint.
+    if not HF_TOKEN:
         print(
-            "ERROR: The following required environment variables are not set:\n"
-            + "".join(f"  {n}\n" for n in _missing)
-            + "\nSet them before running:\n"
-            "  export API_BASE_URL=https://api-inference.huggingface.co/v1\n"
-            "  export MODEL_NAME=meta-llama/Llama-3.3-70B-Instruct\n"
+            "ERROR: HF_TOKEN environment variable is not set.\n"
+            "Set it before running:\n"
             "  export HF_TOKEN=hf_your_token\n"
             "  python inference.py",
             file=sys.stderr,
