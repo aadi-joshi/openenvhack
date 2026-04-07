@@ -37,9 +37,9 @@ from openai import OpenAI
 
 #  Configuration
 
-API_BASE_URL: str = os.environ["API_BASE_URL"]
-MODEL_NAME: str = os.environ["MODEL_NAME"]
-HF_TOKEN: str = os.environ["HF_TOKEN"]
+API_BASE_URL: Optional[str] = os.environ.get("API_BASE_URL")
+MODEL_NAME: Optional[str] = os.environ.get("MODEL_NAME")
+HF_TOKEN: Optional[str] = os.environ.get("HF_TOKEN")
 ENV_BASE_URL: Optional[str] = os.environ.get("ENV_BASE_URL")
 MAX_STEPS: int = int(os.environ.get("MAX_STEPS", "40"))
 TEMPERATURE: float = float(os.environ.get("TEMPERATURE", "0.05"))
@@ -67,9 +67,9 @@ TASK_NAMES: Dict[int, str] = {
     5: "Very Hard -- Referential Maze",
 }
 
-#  LLM client
+#  LLM client (initialized in main() after env var validation)
 
-llm_client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+llm_client: Optional[OpenAI] = None
 
 #  System prompt
 
@@ -416,6 +416,26 @@ def _agent_loop(initial_obs, step_fn, task_id: int, env_type: str) -> float:
 #  Main
 
 def main() -> None:
+    global llm_client
+
+    # Validate required environment variables before doing anything else.
+    _missing = [name for name in ("API_BASE_URL", "MODEL_NAME", "HF_TOKEN")
+                if not os.environ.get(name)]
+    if _missing:
+        print(
+            "ERROR: The following required environment variables are not set:\n"
+            + "".join(f"  {n}\n" for n in _missing)
+            + "\nSet them before running:\n"
+            "  export API_BASE_URL=https://api-inference.huggingface.co/v1\n"
+            "  export MODEL_NAME=meta-llama/Llama-3.3-70B-Instruct\n"
+            "  export HF_TOKEN=hf_your_token\n"
+            "  python inference.py",
+            file=sys.stderr,
+        )
+        sys.exit(0)
+
+    llm_client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+
     print("=" * 70, file=sys.stderr)
     print("DB-ER Baseline Inference Script", file=sys.stderr)
     print(f"Model:    {MODEL_NAME}", file=sys.stderr)
