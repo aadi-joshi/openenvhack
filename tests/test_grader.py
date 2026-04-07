@@ -114,7 +114,7 @@ class TestComputeScore:
         """)
         conn.commit()
         score = compute_score(conn, 1)
-        assert score == 1.0, f"Expected 1.0, got {score}"
+        assert score == pytest.approx(0.99), f"Expected 0.99 (clamped perfect), got {score}"
 
     def test_task2_perfect_repair_scores_1_0(self):
         import json
@@ -128,7 +128,7 @@ class TestComputeScore:
             )
         conn.commit()
         score = compute_score(conn, 2)
-        assert score == 1.0, f"Expected 1.0, got {score}"
+        assert score == pytest.approx(0.99), f"Expected 0.99 (clamped perfect), got {score}"
 
     def test_task3_perfect_repair_scores_1_0(self):
         from server.fixtures import _EMP_CANONICAL, _ALREADY_MIGRATED_IDS
@@ -153,7 +153,7 @@ class TestComputeScore:
                 )
         conn.commit()
         score = compute_score(conn, 3)
-        assert score == 1.0, f"Expected 1.0, got {score}"
+        assert score == pytest.approx(0.99), f"Expected 0.99 (clamped perfect), got {score}"
 
     def test_partial_repair_gives_partial_score(self):
         """Deleting only 1 of 3 duplicates should give partial score between 0 and 1."""

@@ -169,13 +169,13 @@ class TestRewardSignals:
         result = obs.last_query_result
         assert isinstance(result, list) and len(result) > 0
         assert "grader_score" in result[0]
-        assert result[0]["grader_score"] == pytest.approx(1.0)
+        assert result[0]["grader_score"] == pytest.approx(0.99)
 
 
 #  Perfect agent for each task 
 
 class TestPerfectAgent:
-    """Simulate an optimal agent for each task; assert score 1.0."""
+    """Simulate an optimal agent for each task; assert score 0.99 (clamped max)."""
 
     def test_task1_perfect_score(self):
         env = DBEREnvironment()
@@ -187,7 +187,7 @@ class TestPerfectAgent:
         obs = env.step(submit("Removed 3 duplicate email rows. Kept oldest record per email."))
         assert obs.done is True
         score = obs.last_query_result[0]["grader_score"]
-        assert score == pytest.approx(1.0)
+        assert score == pytest.approx(0.99)
 
     def test_task2_perfect_score(self):
         env = DBEREnvironment()
@@ -209,7 +209,7 @@ class TestPerfectAgent:
         obs = env.step(submit("Reconstructed 3 deleted products from audit logs."))
         assert obs.done is True
         score = obs.last_query_result[0]["grader_score"]
-        assert score == pytest.approx(1.0)
+        assert score == pytest.approx(0.99)
 
     def test_task3_perfect_score(self):
         from server.fixtures import _EMP_CANONICAL, _ALREADY_MIGRATED_IDS
@@ -241,7 +241,7 @@ class TestPerfectAgent:
         obs = env.step(submit("Cleaned duplicates and completed payroll migration."))
         assert obs.done is True
         score = obs.last_query_result[0]["grader_score"]
-        assert score == pytest.approx(1.0)
+        assert score == pytest.approx(0.99)
 
     def test_task4_perfect_score(self):
         """Reverse schema column renames using ALTER TABLE RENAME COLUMN."""
@@ -265,7 +265,7 @@ class TestPerfectAgent:
         obs = env.step(submit("Reversed all column renames in inventory and categories tables."))
         assert obs.done is True
         score = obs.last_query_result[0]["grader_score"]
-        assert score == pytest.approx(1.0)
+        assert score == pytest.approx(0.99)
 
     def test_task5_perfect_score(self):
         """Restore missing non-decommissioned projects, assignments, and budgets."""
@@ -305,7 +305,7 @@ class TestPerfectAgent:
         obs = env.step(submit("Restored projects 3 and 7 with assignments and budgets. Skipped decommissioned projects 5 and 9."))
         assert obs.done is True
         score = obs.last_query_result[0]["grader_score"]
-        assert score == pytest.approx(1.0)
+        assert score == pytest.approx(0.99)
 
     def test_all_tasks_reproducible(self):
         """Run task 1 twice with same actions -- must produce identical scores."""

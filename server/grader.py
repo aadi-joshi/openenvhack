@@ -37,7 +37,9 @@ def compute_score(agent_conn: sqlite3.Connection, task_id: int) -> float:
         for table in CORE_TABLES[task_id]:
             score = _score_table(agent_conn, golden_conn, table)
             table_scores.append(score)
-        return round(sum(table_scores) / len(table_scores), 4) if table_scores else 0.0
+        raw = round(sum(table_scores) / len(table_scores), 4) if table_scores else 0.0
+        # Phase 2 validation requires scores strictly in (0, 1) — clamp endpoints.
+        return max(0.01, min(0.99, raw))
     finally:
         golden_conn.close()
 

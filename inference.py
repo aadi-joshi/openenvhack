@@ -248,11 +248,13 @@ def emit_step(step: int, action_dict: Dict[str, Any], reward: float,
     )
 
 
-def emit_end(success: bool, steps: int, rewards: List[float]) -> None:
+def emit_end(success: bool, steps: int, rewards: List[float], score: float) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     success_str = "true" if success else "false"
+    # Clamp score to open interval (0, 1) as required by Phase 2 validation.
+    clamped = max(0.01, min(0.99, score))
     print(
-        f"[END] success={success_str} steps={steps} rewards={rewards_str}",
+        f"[END] success={success_str} steps={steps} score={clamped:.2f} rewards={rewards_str}",
         flush=True,
     )
 
@@ -312,6 +314,7 @@ def _agent_loop(initial_obs, step_fn, task_id: int, env_type: str) -> float:
     history: List[str] = []
     rewards: List[float] = []
     final_reward = 0.0
+    episode_score = 0.01  # default if agent never submits (budget exhausted)
     steps_taken = 0
     success = False
 
@@ -404,11 +407,13 @@ def _agent_loop(initial_obs, step_fn, task_id: int, env_type: str) -> float:
 
             if done:
                 success = True
+                # When agent submits, final_reward IS the grader score.
+                episode_score = final_reward
                 print(f"  [episode complete at step {step}]", file=sys.stderr)
                 break
 
     finally:
-        emit_end(success, steps_taken, rewards)
+        emit_end(success, steps_taken, rewards, episode_score)
 
     return final_reward
 
