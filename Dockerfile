@@ -16,7 +16,7 @@
 # Hugging Face Spaces: set PORT env var (Spaces uses 7860 by default).
 # 
 
-FROM python:3.11-slim-bookworm
+FROM public.ecr.aws/docker/library/python:3.11-slim-bookworm
 
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
